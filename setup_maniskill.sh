@@ -24,7 +24,7 @@ RGBD_ENV_OK=false
 
 # Step 1: System Update
 echo ""
-echo -e "${YELLOW}[1/7] Updating system packages...${NC}"
+echo -e "${YELLOW}[1/6] Updating system packages...${NC}"
 if apt-get update -qq 2>/dev/null; then
     echo -e "${GREEN}✓ Package lists updated${NC}"
 else
@@ -33,7 +33,7 @@ fi
 
 # Step 2: Install Vulkan Dependencies
 echo ""
-echo -e "${YELLOW}[2/7] Installing Vulkan dependencies...${NC}"
+echo -e "${YELLOW}[2/6] Installing Vulkan dependencies...${NC}"
 apt-get install -y -qq \
     vulkan-tools \
     libvulkan1 \
@@ -59,7 +59,7 @@ fi
 
 # Step 3: Create Vulkan Configuration Files
 echo ""
-echo -e "${YELLOW}[3/7] Creating Vulkan configuration files...${NC}"
+echo -e "${YELLOW}[3/6] Creating Vulkan configuration files...${NC}"
 
 # Create nvidia_icd.json
 mkdir -p /usr/share/vulkan/icd.d
@@ -104,7 +104,7 @@ echo -e "${GREEN}✓ Vulkan config files created${NC}"
 
 # Step 4: Check Vulkan Installation
 echo ""
-echo -e "${YELLOW}[4/7] Testing Vulkan installation...${NC}"
+echo -e "${YELLOW}[4/6] Testing Vulkan installation...${NC}"
 if vulkaninfo 2>/dev/null | head -5; then
     echo -e "${GREEN}✓ Vulkan is working!${NC}"
     VULKAN_OK=true
@@ -116,7 +116,7 @@ fi
 
 # Step 5: Install Python Dependencies
 echo ""
-echo -e "${YELLOW}[5/7] Installing ManiSkill and dependencies...${NC}"
+echo -e "${YELLOW}[5/6] Installing ManiSkill and dependencies...${NC}"
 pip install --upgrade pip -q 2>/dev/null
 
 # Install packages one by one to track failures
@@ -157,16 +157,9 @@ else
     echo -e "${YELLOW}⚠ Some packages failed: ${FAILED_PACKAGES[*]}${NC}"
 fi
 
-# Step 6: Create project directories
+# Step 6: Test ManiSkill
 echo ""
-echo -e "${YELLOW}[6/7] Creating project directories...${NC}"
-mkdir -p /workspace/maniskill_project/{data,checkpoints,logs,videos,rgbd_data}
-mkdir -p ~/.maniskill/data
-echo -e "${GREEN}✓ Directories created${NC}"
-
-# Step 7: Test ManiSkill
-echo ""
-echo -e "${YELLOW}[7/7] Testing ManiSkill installation...${NC}"
+echo -e "${YELLOW}[6/6] Testing ManiSkill installation...${NC}"
 
 # Test basic import
 echo "Testing ManiSkill import..."
@@ -259,15 +252,6 @@ fi
 echo "─────────────────────────────────────"
 echo ""
 
-# Project info
-echo "Project Directory: /workspace/maniskill_project/"
-echo "  ├── data/        : Store datasets"
-echo "  ├── rgbd_data/   : Replayed RGBD trajectories"
-echo "  ├── checkpoints/ : Model weights"
-echo "  ├── logs/        : Training logs"
-echo "  └── videos/      : Recorded episodes"
-echo ""
-
 # Recommendations based on status
 if [ "$RGBD_ENV_OK" = true ]; then
     echo -e "${GREEN}🎉 Everything is working! You can proceed with the notebook.${NC}"
@@ -288,5 +272,5 @@ echo "======================================"
 echo "         SETUP COMPLETE"
 echo "======================================"
 echo ""
-echo "Next step: Open and run the ManiSkill notebook!"
+echo "Setup complete! ManiSkill is ready to use."
 echo ""

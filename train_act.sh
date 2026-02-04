@@ -293,6 +293,58 @@ MAX_EPISODE_STEPS="${steps_input:-$MAX_EPISODE_STEPS}"
 echo -e "  ${GREEN}✓${NC} Max ${BOLD}$MAX_EPISODE_STEPS${NC} steps per episode"
 echo ""
 
+# Number of eval episodes
+echo "  How many episodes to run per evaluation?"
+echo "  More episodes = more reliable metric but slower eval."
+echo ""
+echo "  ┌──────────────────────────────────────────────────┐"
+echo "  │  10 episodes  → ~1.5 min  (quick test)          │"
+echo "  │  50 episodes  → ~7 min    (decent signal)       │"
+echo "  │  100 episodes → ~15 min   (official, reliable)  │"
+echo "  └──────────────────────────────────────────────────┘"
+echo ""
+read -p "  Episodes per evaluation? (default: 100): " eval_eps_input
+NUM_EVAL_EPISODES="${eval_eps_input:-100}"
+echo -e "  ${GREEN}✓${NC} Running ${BOLD}$NUM_EVAL_EPISODES${NC} episodes per evaluation"
+echo ""
+
+# Number of parallel eval environments
+echo "  How many parallel environments during evaluation?"
+echo "  More = faster eval, but uses more memory."
+echo "  ⚠  Values >1 may cause issues on some setups."
+echo ""
+echo "  ┌──────────────────────────────────────────────────┐"
+echo "  │  1  → safest, ~15 min/eval with 100 eps         │"
+echo "  │  10 → ~10x faster eval, moderate memory          │"
+echo "  │  25 → very fast eval, higher memory              │"
+echo "  └──────────────────────────────────────────────────┘"
+echo ""
+read -p "  Parallel eval environments? (default: $NUM_EVAL_ENVS): " eval_envs_input
+NUM_EVAL_ENVS="${eval_envs_input:-$NUM_EVAL_ENVS}"
+echo -e "  ${GREEN}✓${NC} Using ${BOLD}$NUM_EVAL_ENVS${NC} parallel eval environment(s)"
+echo ""
+
+# Calculate and show estimated eval time
+ESTIMATED_EVAL_MINS=$(python3 -c "
+eps = $NUM_EVAL_EPISODES
+envs = $NUM_EVAL_ENVS
+steps = $MAX_EPISODE_STEPS
+# Rough estimate: ~0.1 sec per step per env
+time_sec = (eps / envs) * steps * 0.1
+num_evals = ($TOTAL_ITERS // $EVAL_FREQ) + 1
+total_min = (time_sec * num_evals) / 60
+print(f'{total_min:.0f}')
+" 2>/dev/null)
+
+NUM_EVALS=$(( (TOTAL_ITERS / EVAL_FREQ) + 1 ))
+echo "  ┌──────────────────────────────────────────────────┐"
+echo "  │  Summary:                                        │"
+echo "  │  Evals will run $NUM_EVALS times during training"
+echo "  │  Each eval: $NUM_EVAL_EPISODES eps × $MAX_EPISODE_STEPS steps ÷ $NUM_EVAL_ENVS envs"
+echo "  │  Estimated total eval time: ~${ESTIMATED_EVAL_MINS} minutes"
+echo "  └──────────────────────────────────────────────────┘"
+echo ""
+
 # =============================================================================
 # STEP 6: Replay Trajectories to RGBD
 # =============================================================================
@@ -378,15 +430,21 @@ SIM_BACKEND="${SIM_BACKEND:-physx_cpu}"
 
 EXP_NAME="act-${TASK}-rgbd-${NUM_DEMOS}demos-seed${SEED}"
 
+# Detect GPU for display
+GPU_NAME=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))" 2>/dev/null || echo "CUDA GPU")
+
 echo "  Training Configuration:"
 echo "  ─────────────────────────────────────"
+echo -e "  Training device:  ${GREEN}GPU ($GPU_NAME)${NC}"
+echo "  Eval sim backend: $SIM_BACKEND (physics only)"
 echo "  Task:             $TASK"
 echo "  RGBD data:        $(basename "$RGBD_H5")"
 echo "  Control mode:     $CONTROL_MODE"
-echo "  Sim backend:      $SIM_BACKEND"
 echo "  Num demos:        $NUM_DEMOS"
 echo "  Total iterations: $TOTAL_ITERS"
 echo "  Eval frequency:   every $EVAL_FREQ iters"
+echo "  Eval episodes:    $NUM_EVAL_EPISODES per eval"
+echo "  Eval envs:        $NUM_EVAL_ENVS parallel"
 echo "  Experiment name:  $EXP_NAME"
 echo "  W&B tracking:     $USE_WANDB"
 echo "  ─────────────────────────────────────"
@@ -420,6 +478,7 @@ TRAIN_CMD="python train_rgbd.py \
     --num_demos $NUM_DEMOS \
     --include_depth \
     --num-eval-envs $NUM_EVAL_ENVS \
+    --num_eval_episodes $NUM_EVAL_EPISODES \
     --log_freq $LOG_FREQ \
     --eval_freq $EVAL_FREQ \
     --seed $SEED \
@@ -449,21 +508,28 @@ echo -e "  ${GREEN}✓ Training complete!${NC}"
 echo ""
 
 # =============================================================================
-# STEP 8: Run Inference / Evaluation
+# STEP 8: Run Inference & Record Videos
 # =============================================================================
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BOLD}[8/8] Running Inference & Recording Videos${NC}"
 echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# Find the best/latest checkpoint
+# Find the best checkpoint
 CHECKPOINT_DIR="$ACT_DIR/runs/$EXP_NAME"
-CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "*.pt" -type f 2>/dev/null | sort | tail -1)
+CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "best_eval_success_once.pt" -type f 2>/dev/null | head -1)
+
+if [ -z "$CHECKPOINT" ]; then
+    CHECKPOINT=$(find "$CHECKPOINT_DIR" -name "*.pt" -type f 2>/dev/null | sort | tail -1)
+fi
 
 if [ -z "$CHECKPOINT" ]; then
     echo -e "  ${YELLOW}⚠${NC}  No checkpoint found in $CHECKPOINT_DIR"
     echo "  Searching in runs/ directory..."
-    CHECKPOINT=$(find "$ACT_DIR/runs/" -name "*.pt" -type f 2>/dev/null | sort | tail -1)
+    CHECKPOINT=$(find "$ACT_DIR/runs/" -name "best_eval_success_once.pt" -type f 2>/dev/null | head -1)
+    if [ -z "$CHECKPOINT" ]; then
+        CHECKPOINT=$(find "$ACT_DIR/runs/" -name "*.pt" -type f 2>/dev/null | sort | tail -1)
+    fi
 fi
 
 if [ -z "$CHECKPOINT" ]; then
@@ -472,126 +538,147 @@ if [ -z "$CHECKPOINT" ]; then
 else
     echo -e "  ${GREEN}✓${NC} Checkpoint: $CHECKPOINT"
     echo ""
-    echo "  Running 50 evaluation episodes with video recording..."
-    echo ""
 
-    # Create inference output directory
-    INFERENCE_DIR="$RESULTS_DIR/inference"
+    # Create inference output directories
+    INFERENCE_DIR="$RESULTS_DIR/inference_videos"
     mkdir -p "$INFERENCE_DIR"
 
-    # Run inference
-    python -c "
-import gymnasium as gym
-import mani_skill.envs
+    NUM_INFER_EPISODES=10
+    echo "  Running $NUM_INFER_EPISODES evaluation episodes with video recording..."
+    echo ""
+
+    # Run inference using the SAME code as training (importlib approach)
+    # This imports train_rgbd.py as a module to get the exact Agent class,
+    # FlattenRGBDObservationWrapper, and evaluate() function.
+    python3 -c "
+import sys, os, json
+import importlib.util
 import torch
 import numpy as np
-import os
-import json
-from mani_skill.utils.wrappers.record import RecordEpisode
+from functools import partial
 
+ACT_DIR = '$ACT_DIR'
+sys.path.insert(0, ACT_DIR)
+
+# Import train_rgbd.py as module (without running __main__)
+spec = importlib.util.spec_from_file_location('train_rgbd', os.path.join(ACT_DIR, 'train_rgbd.py'))
+mod = importlib.util.module_from_spec(spec)
+sys.modules['train_rgbd'] = mod
+spec.loader.exec_module(mod)
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Load checkpoint
 print('  Loading checkpoint...')
-checkpoint = torch.load('$CHECKPOINT', map_location='cuda', weights_only=False)
-print('  Checkpoint loaded.')
+ckpt = torch.load('$CHECKPOINT', map_location=device, weights_only=False)
+print(f'  Checkpoint keys: {list(ckpt.keys())}')
 
-# Create environment
-env = gym.make(
-    '$TASK',
-    obs_mode='rgbd',
+# Setup args (Agent.get_action() references module-level args)
+agent_args = mod.Args()
+agent_args.include_depth = True
+agent_args.env_id = '$TASK'
+agent_args.control_mode = '$CONTROL_MODE'
+agent_args.sim_backend = '$SIM_BACKEND'
+agent_args.max_episode_steps = $MAX_EPISODE_STEPS
+mod.args = agent_args
+
+# Create eval environment WITH video recording
+from act.make_env import make_eval_envs
+
+video_dir = '$INFERENCE_DIR'
+env_kwargs = dict(
     control_mode='$CONTROL_MODE',
+    reward_mode='sparse',
+    obs_mode='rgbd',
     render_mode='rgb_array',
-    num_envs=1,
+    max_episode_steps=$MAX_EPISODE_STEPS,
 )
-env = RecordEpisode(
-    env,
-    output_dir='$INFERENCE_DIR',
-    save_trajectory=True,
-    trajectory_name='inference_trajectory',
-    save_video=True,
-    max_steps_per_video=$MAX_EPISODE_STEPS,
-    video_fps=30,
+wrappers = [partial(mod.FlattenRGBDObservationWrapper, depth=True)]
+eval_envs = make_eval_envs(
+    '$TASK', 1, '$SIM_BACKEND',
+    env_kwargs, None,
+    video_dir=video_dir,
+    wrappers=wrappers
 )
+print('  ✓ Environment ready (with video recording)')
 
-# Run evaluation episodes
-NUM_EPISODES = 50
-successes = []
-episode_lengths = []
-episode_rewards = []
+# Build Agent and load EMA weights (EMA usually performs better)
+agent = mod.Agent(eval_envs, agent_args).to(device)
+weight_key = 'ema_agent' if 'ema_agent' in ckpt else 'agent'
+agent.load_state_dict(ckpt[weight_key])
+param_count = sum(p.numel() for p in agent.parameters())
+print(f'  ✓ Loaded {weight_key} weights ({param_count:,} params)')
 
-print(f'  Running {NUM_EPISODES} evaluation episodes...')
+# Run evaluation using the SAME evaluate() as training
+from act.evaluate import evaluate
+
+eval_kwargs = {
+    'stats': ckpt['norm_stats'],
+    'num_queries': agent_args.num_queries,
+    'temporal_agg': agent_args.temporal_agg,
+    'max_timesteps': $MAX_EPISODE_STEPS,
+    'device': device,
+    'sim_backend': '$SIM_BACKEND',
+}
+
+print(f'  Running $NUM_INFER_EPISODES episodes...')
 print()
+eval_metrics = evaluate($NUM_INFER_EPISODES, agent, eval_envs, eval_kwargs)
+eval_envs.close()
 
-for ep in range(NUM_EPISODES):
-    obs, info = env.reset()
-    total_reward = 0.0
-    success = False
-
-    for step in range($MAX_EPISODE_STEPS):
-        # Use random action as fallback if model loading differs
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        total_reward += float(reward.sum()) if hasattr(reward, 'sum') else float(reward)
-
-        if terminated.any() if hasattr(terminated, 'any') else terminated:
-            if 'success' in info:
-                s = info['success']
-                success = bool(s.any() if hasattr(s, 'any') else s)
-            break
-
-        if truncated.any() if hasattr(truncated, 'any') else truncated:
-            break
-
-    successes.append(success)
-    episode_lengths.append(step + 1)
-    episode_rewards.append(total_reward)
-
-    status = '✓' if success else '✗'
-    if (ep + 1) % 10 == 0:
-        rate = sum(successes) / len(successes) * 100
-        print(f'  Episode {ep+1}/{NUM_EPISODES} | Running success rate: {rate:.1f}%')
-
-env.close()
-
-# Print results
-success_rate = sum(successes) / len(successes) * 100
-avg_reward = np.mean(episode_rewards)
-avg_length = np.mean(episode_lengths)
+# Results
+success_once = float(np.mean(eval_metrics.get('success_once', np.array([0]))))
+success_end = float(np.mean(eval_metrics.get('success_at_end', np.array([0]))))
+avg_return = float(np.mean(eval_metrics.get('return', np.array([0]))))
+avg_ep_len = float(np.mean(eval_metrics.get('episode_len', np.array([$MAX_EPISODE_STEPS]))))
+avg_reward = float(np.mean(eval_metrics.get('reward', np.array([0]))))
 
 print()
-print('  ══════════════════════════════════════')
-print(f'  Success Rate:    {success_rate:.1f}% ({sum(successes)}/{NUM_EPISODES})')
-print(f'  Avg Reward:      {avg_reward:.2f}')
-print(f'  Avg Ep Length:   {avg_length:.1f} steps')
-print('  ══════════════════════════════════════')
+print('  ══════════════════════════════════════════════════')
+print(f'  Success Once:    {success_once*100:.1f}%')
+print(f'  Success at End:  {success_end*100:.1f}%')
+print(f'  Avg Return:      {avg_return:.2f}')
+print(f'  Avg Ep Length:   {avg_ep_len:.1f} steps')
+print(f'  Weights used:    {weight_key}')
+print('  ══════════════════════════════════════════════════')
 
 # Save metrics
-metrics = {
-    'success_rate': success_rate,
-    'num_episodes': NUM_EPISODES,
-    'num_successes': sum(successes),
-    'avg_reward': float(avg_reward),
-    'avg_episode_length': float(avg_length),
+results = {
+    'success_once': success_once,
+    'success_at_end': success_end,
+    'avg_return': avg_return,
+    'avg_reward': avg_reward,
+    'avg_episode_length': avg_ep_len,
+    'num_episodes': $NUM_INFER_EPISODES,
     'checkpoint': '$CHECKPOINT',
-    'task': '$TASK',
+    'weight_type': weight_key,
+    'env_id': '$TASK',
     'num_demos': $NUM_DEMOS,
     'total_iters': $TOTAL_ITERS,
 }
-with open('$INFERENCE_DIR/metrics.json', 'w') as f:
-    json.dump(metrics, f, indent=2)
-print(f'  Metrics saved to results/inference/metrics.json')
+with open(os.path.join(video_dir, 'metrics.json'), 'w') as f:
+    json.dump(results, f, indent=2)
+print(f'  Metrics saved to {video_dir}/metrics.json')
+
+# List recorded videos
+videos = [f for f in os.listdir(video_dir) if f.endswith('.mp4')]
+print(f'  Videos recorded: {len(videos)}')
 " 2>&1
 
     INFER_EXIT=$?
 
     if [ $INFER_EXIT -ne 0 ]; then
         echo ""
-        echo -e "  ${YELLOW}⚠${NC}  Inference script had issues."
-        echo "  Videos may still have been saved. Check results/inference/"
+        echo -e "  ${YELLOW}⚠${NC}  Inference had issues. Check error above."
+        echo "  You can run inference manually with run_inference.py"
     fi
 
     # Count inference videos
     INFER_VIDEO_COUNT=$(find "$INFERENCE_DIR" -name "*.mp4" 2>/dev/null | wc -l)
-    echo ""
-    echo -e "  ${GREEN}✓${NC} $INFER_VIDEO_COUNT inference videos saved to results/inference/"
+    if [ "$INFER_VIDEO_COUNT" -gt 0 ]; then
+        echo ""
+        echo -e "  ${GREEN}✓${NC} $INFER_VIDEO_COUNT inference videos saved to results/inference_videos/"
+    fi
 fi
 
 # Copy training logs to results
@@ -613,9 +700,9 @@ echo ""
 echo "  All results saved to: $RESULTS_DIR/"
 echo ""
 echo "  📁 results/"
-echo "  ├── replay_videos/     Demo replays (RGBD)"
-echo "  ├── inference/         Evaluation videos + metrics"
-echo "  └── training_logs/     Checkpoints + tensorboard logs"
+echo "  ├── replay_videos/       Expert demo replays (RGBD)"
+echo "  ├── inference_videos/    Trained policy videos + metrics"
+echo "  └── training_logs/       Checkpoints + tensorboard logs"
 echo ""
 
 if [ "$USE_WANDB" = true ]; then
